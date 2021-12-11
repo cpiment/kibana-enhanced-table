@@ -23,10 +23,10 @@ interface RequestHandlerParams {
   filters?: Filter[];
   indexPattern?: IndexPattern;
   inspectorAdapters: Adapters;
+  searchSessionId?: string;
   metricsAtAllLevels?: boolean;
   partialRows?: boolean;
   query?: Query;
-  searchSessionId?: string;
   searchSource: ISearchSource;
   timeFields?: string[];
   timeRange?: TimeRange;
