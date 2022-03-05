@@ -95,11 +95,7 @@ export async function enhancedTableRequestHandler ({
 
   // enrich columns: aggConfig
   response.columns.forEach( column => {
-<<<<<<< HEAD
-    column.aggConfig = aggs.byId(column.meta.sourceParams.id.split(".")[0]);
-=======
     column.aggConfig = aggs.byId(column.meta.sourceParams.id.split('.')[0]);
->>>>>>> fbaligand-master
   });
 
   // enrich response: hits
