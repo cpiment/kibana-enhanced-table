@@ -10,7 +10,7 @@ import { Parser } from 'expr-eval';
 import handlebars from 'handlebars/dist/handlebars';
 
 // EnhancedTableVis AngularJS controller
-function EnhancedTableVisController ($scope, config) {
+function EnhancedTableVisController ($scope, tableConfig) {
 
   class EnhancedTableError {
     constructor(message) {
@@ -18,26 +18,30 @@ function EnhancedTableVisController ($scope, config) {
     }
   }
 
-  const getConfig = (...args) => config.get(...args);
+  const getConfig = (...args) => tableConfig.get(...args);
 
   handlebars.registerHelper('encodeURIComponent', encodeURIComponent);
 
   // controller methods
 
-  const createTemplateContext = function (table, column, row, totalHits, timeRange) {
+  const createTemplateContext = function (table, column, row, totalHits, timeRange, computedColsPerSplitCol, splitColIndex) {
 
     // inject column value references
-    const templateContext = { totalHits, timeRange };
+    const templateContext = { total: totalHits, totalHits, timeRange };
     _.forEach(column.template.paramsCols, function (templateParamCol) {
       templateContext[`col${templateParamCol}`] = row[templateParamCol].value;
     });
 
     // inject column total references
     _.forEach(column.template.paramsTotals, function (templateParamTotal) {
-      if (table.columns[templateParamTotal].total === undefined) {
-        table.columns[templateParamTotal].total = computeColumnTotal(templateParamTotal, column.template.totalFunc, table);
+      let templateParamTotalValue = table.columns[templateParamTotal].total;
+      if (templateParamTotalValue === undefined) {
+        templateParamTotalValue = computeColumnTotal(templateParamTotal, column.template.totalFunc, table, computedColsPerSplitCol, splitColIndex, row);
+        if (!computedColsPerSplitCol) {
+          table.columns[templateParamTotal].total = templateParamTotalValue;
+        }
       }
-      templateContext[`total${templateParamTotal}`] = table.columns[templateParamTotal].total;
+      templateContext[`total${templateParamTotal}`] = templateParamTotalValue;
     });
 
     return templateContext;
@@ -88,7 +92,7 @@ function EnhancedTableVisController ($scope, config) {
     }
   };
 
-  const createFormula = function (inputFormula, formulaType, splitColIndex, columns, totalFunc) {
+  const createFormula = function (inputFormula, formulaType, splitColIndex, columns, totalFunc, computedColsPerSplitCol) {
 
     if (!inputFormula) {
       return undefined;
@@ -133,8 +137,8 @@ function EnhancedTableVisController ($scope, config) {
     realFormula = realFormula.replace(/(col)\s*\(/g, '$1(row, ');
     realFormula = realFormula.replace(/(sumSplitCols)\s*\(/g, '$1(row');
 
-    // add 'table' param for functions that require whole table
-    realFormula = realFormula.replace(/(total)\s*\(/g, '$1(table, ');
+    // add 'table' & 'row' param for functions that require whole table
+    realFormula = realFormula.replace(/(total)\s*\(/g, '$1(table, row, ');
 
     // replace 'total' variable by 'totalHits'
     realFormula = realFormula.replace(/([^\w]|^)total([^(\w]|$)/g, '$1totalHits$2');
@@ -229,7 +233,7 @@ function EnhancedTableVisController ($scope, config) {
         return defaultValue;
       }
     };
-    parser.functions.total = function (table, colRef, defaultValue) {
+    parser.functions.total = function (table, row, colRef, defaultValue) {
       try {
         let colIndex = colRef;
         if (typeof colRef === 'string') {
@@ -237,10 +241,13 @@ function EnhancedTableVisController ($scope, config) {
         }
         if (colIndex < currentCol) {
           colIndex = getRealColIndex(colIndex, splitColIndex);
-          if (columns[colIndex].total === undefined) {
-            columns[colIndex].total = computeColumnTotal(colIndex, totalFunc, table);
+          let colTotal = columns[colIndex].total;
+          if (colTotal === undefined) {
+            colTotal = computeColumnTotal(colIndex, totalFunc, table, computedColsPerSplitCol, splitColIndex, row);
+            if (!computedColsPerSplitCol) {
+              columns[colIndex].total = colTotal;
+            }
           }
-          const colTotal = columns[colIndex].total;
           return colTotal !== undefined ? colTotal : defaultValue;
         }
         else {
@@ -289,7 +296,7 @@ function EnhancedTableVisController ($scope, config) {
     }
   };
 
-  const computeFormulaValue = function (formula, table, row, totalHits, timeRange, cellValue) {
+  const computeFormulaValue = function (formula, table, row, totalHits, timeRange, cellValue, computedColsPerSplitCol, splitColIndex) {
     try {
       const formulaParams = { totalHits: totalHits, table: table, row: row, timeRange: timeRange, value: cellValue };
 
@@ -300,10 +307,14 @@ function EnhancedTableVisController ($scope, config) {
 
       // inject column total references
       _.forEach(formula.paramsTotals, function (formulaParamTotal) {
-        if (table.columns[formulaParamTotal].total === undefined) {
-          table.columns[formulaParamTotal].total = computeColumnTotal(formulaParamTotal, formula.totalFunc, table);
+        let formulaParamTotalValue = table.columns[formulaParamTotal].total;
+        if (formulaParamTotalValue === undefined) {
+          formulaParamTotalValue = computeColumnTotal(formulaParamTotal, formula.totalFunc, table, computedColsPerSplitCol, splitColIndex, row);
+          if (!computedColsPerSplitCol) {
+            table.columns[formulaParamTotal].total = formulaParamTotalValue;
+          }
         }
-        formulaParams[`total${formulaParamTotal}`] = table.columns[formulaParamTotal].total;
+        formulaParams[`total${formulaParamTotal}`] = formulaParamTotalValue;
       });
 
       const value = formula.expression.evaluate(formulaParams);
@@ -386,7 +397,7 @@ function EnhancedTableVisController ($scope, config) {
   };
 
   /** create a new data table column for specified computed column */
-  const createColumn = function (computedColumn, index, totalHits, splitColIndex, columns, showTotal, totalFunc, aggs) {
+  const createColumn = function (computedColumn, index, splitColIndex, columns, showTotal, totalFunc, aggs, computedColsPerSplitCol) {
 
     const fieldFormats = getFormatService();
     const FieldFormat = fieldFormats.getType(computedColumn.format);
@@ -405,10 +416,11 @@ function EnhancedTableVisController ($scope, config) {
       aggConfig: aggs.createAggConfig({ schema: aggSchema, type: aggType }, { addToAggConfigs: false }),
       title: computedColumn.label,
       fieldFormatter: new FieldFormat(fieldFormatParams, getConfig),
+      applyTemplateOnTotal: computedColumn.applyTemplate && computedColumn.applyTemplateOnTotal,
       dataAlignmentClass: `text-${computedColumn.alignment}`,
-      formula: createFormula(computedColumn.formula, 'computed column', splitColIndex, columns, totalFunc),
+      formula: createFormula(computedColumn.formula, 'computed column', splitColIndex, columns, totalFunc, computedColsPerSplitCol),
       template: createTemplate(computedColumn, splitColIndex, columns, totalFunc),
-      cellComputedCssFormula: createFormula(computedColumn.cellComputedCss, 'Cell computed CSS', splitColIndex, columns, totalFunc)
+      cellComputedCssFormula: createFormula(computedColumn.cellComputedCss, 'Cell computed CSS', splitColIndex, columns, totalFunc, computedColsPerSplitCol)
     };
 
     // check that computed column formula is defined
@@ -451,72 +463,81 @@ function EnhancedTableVisController ($scope, config) {
 
     // process "computeTotalUsingFormula" option
     if (showTotal && computedColumn.computeTotalUsingFormula) {
-      const totalFormula = computedColumn.formula.replace(/col(\[|\d+)/g, 'total$1')
-        .replace(/col\s*\(\s*(\d+)[^)]*\)/g, 'total$1');
-      newColumn.totalFormula = createFormula(totalFormula, 'computed total', splitColIndex, columns, totalFunc);
+      const totalFormula = computedColumn.formula.replace(/col(\[|\s*\(|\d+)/g, 'total$1');
+      newColumn.totalFormula = createFormula(totalFormula, 'computed total', splitColIndex, columns, totalFunc, computedColsPerSplitCol);
     }
-
-    // add "total" formatter function
-    newColumn.totalFormatter = function (contentType) {
-      return function (value) {
-        const self = { value: value, column: newColumn };
-        if (computedColumn.applyTemplate && computedColumn.applyTemplateOnTotal) {
-          self.templateContext = { total: totalHits };
-        }
-        return renderCell.call(self, contentType);
-      };
-    };
 
     return newColumn;
   };
 
-  const createComputedCell = function (table, column, row, totalHits, timeRange) {
-    const value = computeFormulaValue(column.formula, table, row, totalHits, timeRange);
+  const createComputedCell = function (table, column, row, totalHits, timeRange, computedColsPerSplitCol, splitColIndex) {
+    const value = computeFormulaValue(column.formula, table, row, totalHits, timeRange, undefined, computedColsPerSplitCol, splitColIndex);
     const parent = row.length > 0 && row[row.length-1];
     const newCell = new AggConfigResult(column.aggConfig, parent, value, value);
     newCell.column = column;
     if (column.template !== undefined) {
-      newCell.templateContext = createTemplateContext(table, column, row, totalHits, timeRange);
+      newCell.templateContext = createTemplateContext(table, column, row, totalHits, timeRange, computedColsPerSplitCol, splitColIndex);
     }
     if (column.cellComputedCssFormula !== undefined) {
-      newCell.cssStyle = computeFormulaValue(column.cellComputedCssFormula, table, row, totalHits, timeRange, value);
+      newCell.cssStyle = computeFormulaValue(column.cellComputedCssFormula, table, row, totalHits, timeRange, value, computedColsPerSplitCol, splitColIndex);
     }
     newCell.toString = renderCell;
     return newCell;
   };
 
-  const addComputedColumnToTables = function (tables, newColumn, customColumnPosition, totalHits, timeRange) {
-    _.forEach(tables, function (table) {
-      if (table.tables) {
-        addComputedColumnToTables(table.tables, newColumn, customColumnPosition, totalHits, timeRange);
-        return;
-      }
+  const createTotalFormatter = function (table, column, row, totalHits, timeRange, computedColsPerSplitCol, splitColIndex) {
+    return function (contentType) {
+      return function (value) {
+        const self = { value, column };
+        if (column.applyTemplateOnTotal) {
+          self.templateContext = createTemplateContext(table, column, row, totalHits, timeRange, computedColsPerSplitCol, splitColIndex);
+        }
+        return renderCell.call(self, contentType);
+      };
+    };
+  };
 
-      // add new computed column and its cells
-      newColumn = _.clone(newColumn);
+  const addComputedColumnToTables = function (table, newColumn, customColumnPosition, totalHits, timeRange, computedColsPerSplitCol, splitColIndex) {
+
+    // recursive call
+    if (table.tables) {
+      table.tables.forEach(function (subTable) {
+        addComputedColumnToTables(subTable, newColumn, customColumnPosition, totalHits, timeRange, computedColsPerSplitCol, splitColIndex);
+      });
+      return;
+    }
+
+    // add new computed column
+    newColumn = _.clone(newColumn);
+    if (!computedColsPerSplitCol) {
+      newColumn.totalFormatter = createTotalFormatter(table, newColumn, undefined, totalHits, timeRange, computedColsPerSplitCol, splitColIndex);
+    }
+
+    // add new computed column cells
+    _.forEach(table.rows, function (row) {
+      const newCell = createComputedCell(table, newColumn, row, totalHits, timeRange, computedColsPerSplitCol, splitColIndex);
       if (customColumnPosition || customColumnPosition === 0) {
-        table.columns.splice(customColumnPosition, 0, newColumn);
+        row.splice(customColumnPosition, 0, newCell);
       }
       else {
-        table.columns.push(newColumn);
+        row.push(newCell);
       }
-      _.forEach(table.rows, function (row) {
-        const newCell = createComputedCell(table, newColumn, row, totalHits, timeRange);
-        if (customColumnPosition || customColumnPosition === 0) {
-          row.splice(customColumnPosition, 0, newCell);
-        }
-        else {
-          row.push(newCell);
-        }
-        row[newColumn.id] = newCell.value;
-      });
-
-      // compute total if totalFormula is present
-      if (newColumn.totalFormula) {
-        newColumn.total = computeFormulaValue(newColumn.totalFormula, table, null, totalHits, timeRange);
-      }
-
+      row[newColumn.id] = newCell.value;
     });
+
+    // compute total if totalFormula is present
+    if (newColumn.totalFormula && !computedColsPerSplitCol) {
+      newColumn.total = computeFormulaValue(newColumn.totalFormula, table, null, totalHits, timeRange);
+    }
+
+    // insert new column in table
+    if (customColumnPosition || customColumnPosition === 0) {
+      table.columns.splice(customColumnPosition, 0, newColumn);
+    }
+    else {
+      table.columns.push(newColumn);
+    }
+
   };
 
   const processLinesComputedFilter = function (tables, linesComputedFilterFormula, totalHits, timeRange) {
@@ -549,13 +570,13 @@ function EnhancedTableVisController ($scope, config) {
   const processRowsComputedOptions = function (tableGroups, columns, params, splitColIndex, totalHits, timeRange) {
     // process lines computed filter
     if (params.linesComputedFilter) {
-      const linesComputedFilterFormula = createFormula(params.linesComputedFilter, 'Rows computed filter', splitColIndex, columns, params.totalFunc);
+      const linesComputedFilterFormula = createFormula(params.linesComputedFilter, 'Rows computed filter', splitColIndex, columns, params.totalFunc, false);
       tableGroups.tables = processLinesComputedFilter(tableGroups.tables, linesComputedFilterFormula, totalHits, timeRange);
     }
 
     // process rows computed CSS
     if (params.rowsComputedCss) {
-      const rowsComputedCssFormula = createFormula(params.rowsComputedCss, 'Rows computed CSS', splitColIndex, columns, params.totalFunc);
+      const rowsComputedCssFormula = createFormula(params.rowsComputedCss, 'Rows computed CSS', splitColIndex, columns, params.totalFunc, false);
       processRowsComputedCss(tableGroups, rowsComputedCssFormula, totalHits, timeRange);
     }
   };
@@ -663,14 +684,37 @@ function EnhancedTableVisController ($scope, config) {
     }
   };
 
+  const findNewSplitColIndex = function(newColValue, splitColValues) {
+    if (newColValue === undefined || newColValue === null) {
+      newColValue = undefined;
+    }
+    else if (newColValue.from !== undefined) {
+      newColValue = newColValue.from;
+    }
+    else if (newColValue.gte !== undefined) {
+      newColValue = newColValue.gte;
+    }
+
+    let newColIndex = 0;
+    while (newColIndex < splitColValues.length) {
+      if (splitColValues[newColIndex] >= newColValue) {
+        break;
+      }
+      newColIndex++;
+    }
+
+    splitColValues.splice(newColIndex, 0, newColValue);
+    return newColIndex;
+  };
+
   const DEFAULT_METRIC_VALUE = 0;
 
-  const splitCols = function (table, splitColIndex, totalHits, timeRange) {
+  const splitCols = function (table, computedColsPerSplitCol, splitColIndex, sortSplitCols, totalHits, timeRange) {
 
     // process only real tables (with rows)
     if (table.tables) {
       _.forEach(table.tables, function (table) {
-        splitCols(table, splitColIndex, totalHits, timeRange);
+        splitCols(table, computedColsPerSplitCol, splitColIndex, sortSplitCols, totalHits, timeRange);
       });
       return;
     }
@@ -680,7 +724,7 @@ function EnhancedTableVisController ($scope, config) {
     for (let i = 0; i < refRowForComputedColumn.length; i++) {
       const cell = refRowForComputedColumn[i];
       if (cell.column !== undefined) {
-        refRowForComputedColumn[i] = createComputedCell(table, cell.column, refRowForComputedColumn, totalHits, timeRange);
+        refRowForComputedColumn[i] = createComputedCell(table, cell.column, refRowForComputedColumn, totalHits, timeRange, computedColsPerSplitCol, splitColIndex);
       }
       else if (cell.type === 'metric') {
         refRowForComputedColumn[i] = new AggConfigResult(cell.aggConfig, null, DEFAULT_METRIC_VALUE, DEFAULT_METRIC_VALUE, cell.filters);
@@ -697,6 +741,7 @@ function EnhancedTableVisController ($scope, config) {
     const newRows = [];
     let newRow = null;
     const newColNamePrefixes = [];
+    const newColValues = [];
     const newColDefaultMetrics = [];
     const metricsCount = table.columns.length - 1 - splitColIndex;
 
@@ -729,22 +774,41 @@ function EnhancedTableVisController ($scope, config) {
 
       // create new col
       if (newColIndex === -1) {
-        newColNamePrefixes.push(rowSplitColValue);
-        newColIndex = newColNamePrefixes.length - 1;
+        if (sortSplitCols) {
+          newColIndex = findNewSplitColIndex(row[splitColIndex].value, newColValues);
+        }
+        else {
+          newColIndex = newColNamePrefixes.length;
+        }
+        newColNamePrefixes.splice(newColIndex, 0, rowSplitColValue);
         for (let i = splitColIndex+1; i < row.length; i++) {
+          const spliceIndex = (i - 1) + (newColIndex * metricsCount);
+
+          // add new column
           const newCol = _.clone(table.columns[i]);
           newCol.title = metricsCount > 1 ? rowSplitColValue + ' - ' + newCol.title : rowSplitColValue;
-          newCols.push(newCol);
+          if (computedColsPerSplitCol && newCol.totalFormula !== undefined) {
+            newCol.total = computeFormulaValue(newCol.totalFormula, table, row, totalHits, timeRange, undefined, computedColsPerSplitCol, splitColIndex);
+          }
+          if (computedColsPerSplitCol && newCol.template !== undefined) {
+            newCol.totalFormatter = createTotalFormatter(_.clone(table), newCol, row, totalHits, timeRange, computedColsPerSplitCol, splitColIndex);
+          }
+          newCols.splice(spliceIndex, 0, newCol);
+
+          // add new column default metric
           let newColDefaultMetric;
           if (newCol.formula === undefined) {
             newColDefaultMetric = new AggConfigResult(row[i].aggConfig, null, DEFAULT_METRIC_VALUE, DEFAULT_METRIC_VALUE, row[i].filters);
           }
           else {
-            newColDefaultMetric = createComputedCell(table, newCol, refRowForComputedColumn, totalHits, timeRange);
+            newColDefaultMetric = createComputedCell(table, newCol, refRowForComputedColumn, totalHits, timeRange, computedColsPerSplitCol, splitColIndex);
           }
-          newColDefaultMetrics.push(newColDefaultMetric);
+          newColDefaultMetrics.splice(spliceIndex - splitColIndex, 0, newColDefaultMetric);
+
+          // add new column to new rows
+          newRow.splice(spliceIndex, 0, newColDefaultMetric);
           for (let j = 0; j < newRows.length - 1; j++) {
-            newRows[j].push(newColDefaultMetric);
+            newRows[j].splice(spliceIndex, 0, newColDefaultMetric);
           }
         }
       }
@@ -967,7 +1031,7 @@ function EnhancedTableVisController ($scope, config) {
         }
 
         // no data to display
-        if (totalHits === 0 || firstTable === null) {
+        if (firstTable === null || firstTable.rows.length === 0) {
           $scope.hasSomeRows = false;
           $scope.hasSomeData = false;
           $scope.renderComplete();
@@ -976,14 +1040,14 @@ function EnhancedTableVisController ($scope, config) {
 
         // process 'Split cols' bucket: transform rows to cols
         if (splitColIndex !== -1 && !params.computedColsPerSplitCol) {
-          splitCols(tableGroups, splitColIndex, totalHits, timeRange);
+            splitCols(tableGroups, splitColIndex !== -1 && params.computedColsPerSplitCol, splitColIndex, params.sortSplitCols, totalHits, timeRange);
         }
 
         // add computed columns
         _.forEach(params.computedColumns, function (computedColumn, index) {
           if (computedColumn.enabled) {
-            const newColumn = createColumn(computedColumn, index, totalHits, splitColIndex, firstTable.columns, params.showTotal, params.totalFunc, aggs);
-            addComputedColumnToTables(tableGroups.tables, newColumn, computedColumn.customColumnPosition, totalHits, timeRange);
+            const newColumn = createColumn(computedColumn, index, splitColIndex, firstTable.columns, params.showTotal, params.totalFunc, aggs, splitColIndex !== -1 && params.computedColsPerSplitCol);
+            addComputedColumnToTables(tableGroups, newColumn, computedColumn.customColumnPosition, totalHits, timeRange, splitColIndex !== -1 && params.computedColsPerSplitCol, splitColIndex);
           }
         });
 
@@ -1000,7 +1064,7 @@ function EnhancedTableVisController ($scope, config) {
         // process 'Split cols' bucket: transform rows to cols
         if (splitColIndex !== -1 && params.computedColsPerSplitCol) {
           splitColIndex = findSplitColIndex(firstTable);
-          splitCols(tableGroups, splitColIndex, totalHits, timeRange);
+          splitCols(tableGroups, splitColIndex !== -1 && params.computedColsPerSplitCol, splitColIndex, params.sortSplitCols, totalHits, timeRange);
         }
 
         // process rows computed options : lines computed filter and rows computed CSS (split cols)

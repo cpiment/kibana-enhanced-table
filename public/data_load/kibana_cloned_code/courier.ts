@@ -23,9 +23,10 @@ interface RequestHandlerParams {
   filters?: Filter[];
   indexPattern?: IndexPattern;
   inspectorAdapters: Adapters;
+  searchSessionId?: string;
+  metricsAtAllLevels?: boolean;
   partialRows?: boolean;
   query?: Query;
-  searchSessionId?: string;
   searchSource: ISearchSource;
   timeFields?: string[];
   timeRange?: TimeRange;
@@ -38,6 +39,7 @@ export const handleCourierRequest = async ({
   filters,
   indexPattern,
   inspectorAdapters,
+  metricsAtAllLevels,
   partialRows,
   query,
   searchSessionId,
@@ -67,7 +69,7 @@ export const handleCourierRequest = async ({
       return searchSource.history;
     },
     set(history) {
-      return (searchSource.history = history);
+      searchSource.history = history;
     },
   });
 
@@ -118,14 +120,14 @@ export const handleCourierRequest = async ({
 
   const parsedTimeRange = timeRange ? calculateBounds(timeRange, { forceNow }) : null;
   const tabifyParams = {
-    metricsAtAllLevels: aggs.hierarchical,
+    metricsAtAllLevels,
     partialRows,
     timeRange: parsedTimeRange
       ? { from: parsedTimeRange.min, to: parsedTimeRange.max, timeFields: allTimeFields }
       : undefined,
   };
 
-  //Need this so the enhancedTableRequestHandler can recover the hits for the document table
+  // Need this so the enhancedTableRequestHandler can recover the hits for the document table
   (searchSource as any).finalResponse = response;
 
   const tabifiedResponse = tabifyAggResponse(aggs, response, tabifyParams);
